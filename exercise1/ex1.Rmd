@@ -1,8 +1,8 @@
 ---
 title: "finans_ex1"
 author: "Silje Marie Anfindsen"
-date: "9/6/2021"
-output: pdf_document
+date: " september 2021"
+output: html_document
 ---
 
 ```{r setup, include=FALSE}
@@ -111,21 +111,21 @@ g82 <- ggplot(data = serie8, mapping = aes(x=date, y=returns[[8]]) )  + geom_lin
 ggarrange(g81,g82)
 ```
 
-serie1: 
+serie1: indeks?
 
-serie2: 
+serie2: equinor
 
-serie3: 
+serie3: frontline
 
-serie4: 
+serie4: apple
 
-serie5: 
+serie5: amerikansk bank, 
 
-serie6: 
+serie6: Exon
 
-serie7:
+serie7:dnb?
 
-serie8: 
+serie8:indeks
 
 
 ### Knytt gjerne skifter i variasjonsmønster til kjente datoer/perioder:
@@ -166,11 +166,12 @@ random.walk <- function(serie){
   
 }
 
-
 rw.price1 <- random.walk(serie1)
 rw.serie1 <- ggplot(data=serie1, aes(x=date,y=rw.price1)) + geom_line() + ggtitle("random walk") + labs(x="tid", y="simulert aksjepris")
-qq1 <- ggplot(mapping = aes(x = rw.price1, y = serie1$value)) + geom_point() + ggtitle("qqplot serie1 vs. rw") + labs(x="simulated data", y="actual data")
-ggarrange(g11, rw.serie1,qq1)
+qqplot(rw.price1, serie1$value)
+
+
+ggarrange(g11, rw.serie1)
 
 rw.serie2 <- random.walk(serie2)
 ggarrange(g21, rw.serie2)
@@ -194,69 +195,92 @@ fordeling ved forfall på et par tidspunkt i opsjonens levetid - samt
 hvor faktisk sluttverdi faller i disse.
 
 
-
-Regn ut call-price:
+Regn ut call-price fra Black-Scholes formel:
 $$C(S,t) = SN(d_1) - Ee^r{T-t}N(d_2)$$
 ```{r}
+
+#black scholes analytisk opsjonspris
+# N(.) is the cumulative distribution function of the standard normal distribution
+# T-t  is the time to maturity (expressed in years)
+# S is the current price / spot price of the underlying asset
+# E is the exercise price or strike price
+# r is the risk-free rate (annual rate, expressed in terms of continuous compounding)
+# σ is the volatility of returns of the underlying asset.
+
 callPrice <- function(S, E, r, t, sigma){
   d_1 = (log(S/E) + (r+ 1/2*sigma^2 ) * t )/ (sigma*sqrt(t))
   d_2 = (log(S/E) + ( r- 1/2*sigma^2 ) * t )/ (sigma*sqrt(t))
   return (S*pnorm(d_1) - E*exp(-r*t)*pnorm(d_2))}
 ```
 
-La oss se på serie 1. Start-dato er 5.februar 2019. Exercise price er $153,55$. Forfallsdato er 5.august 2019 og da er faktisk aksjepris lik $151,95$. 
+Vi vil også prøve å simulere 1000 ganger random walk modellen fra forrig oppgave for å finne prisen på opsjonen ved simulering fra modell. Gitt at nåværende aksjepris (5.februar 2019) for serie 1 er $S_0 = 153,55$ så antar vi at prisen for tid $t$ er
+
+$$S(t) = S_0 e^{(r- \frac{\sigma^2}{2})T + \sigma W_T} $$ der $W_T$ følger en normalfordeling med mean 0 og varians $T$.
+
+Payoff for Call option er dermed: $ max (S_T - E, 0) $
+
+```{r}
+#simulert opsjonspris
+# call put option monte carlo
+call_mc<-function(nSim, tau, r, sigma, S0, K) {
+  
+  Z <- rnorm(nSim, mean=0, sd=1)
+  WT <- sqrt(tau) * Z
+  ST = S0*exp((r - 0.5*sigma^2)*tau + sigma*WT)
+  
+  # price and standard error of call option
+  simulated_call_payoffs <- exp(-r*tau)*pmax(ST-K,0)
+  price_call <- mean(simulated_call_payoffs)
+  sterr_call <- sd(simulated_call_payoffs)/sqrt(nSim)
+
+  
+  # output<-list(price_call=price_call, sterr_call=sterr_call, 
+  #              price_put=price_put, sterr_put=sterr_put)
+  return(price_call)}
+```
+
+La oss se på serie 1. 
+Start-dato er 5.februar 2019. Serie1 er på denne datoen verdt $153,55$.
+Exercise price / strike price er $153,55$. Det vil si en fiksert pris som den som holder opsjonen kan kjøpe/selge aksjen for. Den er for at-the-money det samme som nåværende verdig av aksjen.
+Forfallsdato er 5.august 2019. Aksjeprisen fra serie1 (ikke simulert verdi) er da $151,95$. 
 
 ##### definere opsjoner for serie 1 "at the money"
 at the money = prisen for opsjonen skal være den samme som nåværende verdi / markedspris.
 
 ```{r}
-t = 1/2
-S = E = 153.55
-r = 0.05
+
+t = 0.5 #halvt år 
+S = E = 153.55 #current price
+r = 0.02 #usikker hva denne risikofrie renten bør settes til.
 sigma = sd(returns[[1]])/100
 
-print("at the money:")
+print("at the money analytical price:")
 callPrice(S, E, r, t, sigma)
+
+set.seed(1)
+sim_price<-call_mc(n=1000, t, r, sigma, S, E)
+print("at the money simulated price:")
+sim_price
 ```
 
 ##### definere opsjoner for serie 1 "out of the money"
 out of the money = strike price/exercise price er høyere enn markedspris.
 
-
 ```{r}
 t = 1/2
 S = 153.55
 E = 160
-r = 0.05
+r = 0.02
 sigma = sd(returns[[1]])/100
+
+set.seed(1)
 
 print("out of the money:")
 callPrice(S, E, r, t, sigma)
-```
-
-Vil nå simulere fra random walk modellen i oppgave 2 og sjekke hva prisen er den 5.august 2019.
-
-```{r}
-
-sim <- rw.price1[which(serie1$date =="2019-08-05")]
-ex.price.at <- 153.55
-ex.price.out <- 160
-
-print("simulert aksjepris ved forfall er:")
-sim
-
-print("at the money:")
-sim - ex.price.at
-
-print("out of the money:")
-sim - ex.price.out
-
+print("at the money simulated price:")
+call_mc(n=1000, t, r, sigma, S, E)
 
 ```
-
-Call price antas å være differansen mellom simulert verdi og exercise price.
-For "at the money" vil man da sette den lik 2.7
-og for "out of the money" lik 0?
 
 
 ##  Oppgave 4
