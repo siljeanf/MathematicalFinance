@@ -1,0 +1,704 @@
+---
+title: "Finans modul rente-oppgaver"
+author: "Silje Marie Anfindsen"
+date: "10/5/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(xlsx)
+library(ggplot2)
+library(ggpubr)
+library(gridExtra)
+
+```
+
+## Oppgaver
+
+1) Analysere rentedata på samme måte som for aksjedata - se på dataene, reflekter over ulikheter mellom tidsperioder og mellom korte og lange renters oppførsel.
+  
+2) Plukk til slutt en tidsserie eller to eller tre og let mer detaljert etter interessante fenomen og sammenhenger, gjerne koblet mot noen av de episodene dere identifiserte i aksje-data.  
+
+3) Bruk så en enkel rentemodell på en av tidsseriene (en-faktor modell, gjerne Vasicek). 
+
+
+
+```{r import data}
+# read in the first worksheet from the workbook myexcel.xlsx
+renter <- read.xlsx("20210922Renter.xlsx", 1, startRow = 2)
+```
+
+```{r}
+manipulateSeries <- function(serie){
+  
+  date <- serie[,1]
+  value <- serie[,2]
+  
+  if(is.na(tail(date,1))){
+  end <- min(which(is.na(date)))-1
+  df <- data.frame(date = date[1:end], value = value[1:end] )
+  }
+  else {
+    df <- data.frame(date = date, value = value)
+  }
+  return(df)
+}
+```
+
+```{r}
+numSeries <- length(renter[1,])/2-2 #antall series (2 kolonner per serie)
+allSeries <- vector(mode = "list", length = numSeries) #tom liste for alle serier
+
+for (i in 1: numSeries){
+  allSeries[[i]] <- manipulateSeries(renter[,(i*2-1):(i*2)])
+}
+
+  
+names(allSeries) = c("3 mnd", "6 mnd", "1 år", "2 år", "3 år", "4 år", "5 år", "6 år", "7 år", "8 år", "9 år", "10 år", "12 år", "15 år")
+
+```
+```{r}
+for (p in 1:numSeries){
+  print(ggplot(data = allSeries[[p]], mapping = aes(x=date , y=value)) + geom_line() + ggtitle(names(allSeries[p])) +  labs(x="Time", y = "Price"))}
+```
+
+
+```{r}
+#plot flere sammen  
+
+ggplot() + geom_line(data = allSeries[["3 mnd"]], mapping = aes(x=date , y=value, color="3 mnd"))+ 
+  geom_line(data = allSeries[["1 år"]], mapping = aes(x=date , y=value, color="1 år")) +
+  geom_line(data = allSeries[["5 år"]], mapping = aes(x=date , y=value, color="5 år")) +
+  geom_line(data = allSeries[["15 år"]], mapping = aes(x=date , y=value, color="15 år")) +
+
+  ggtitle("interest rates") + 
+  labs(x="Time", y = "Price") 
+```
+
+## Analyse av kortsiktige vs. langsiktie renter
+
+Vi kan se at kortvarige renter, altså med tidlig maturity date er mer volatile og generelt lavere i verdi (med unntak i 2008-2009) enn renter over en lang tidshorisont. Dette er naturlig da langvarige renter inneholder større risiko mtp. tilbakebetaling og at holder da vil ta en høyere pris basert på den økte risikoen.
+
+De kortvarige rentene er mer sensitive til foranringer i renten blant annet fordi 
+1) myndighetene sine endringer i rentemarkedet har som hensikt å ha effekt mot kortsiktig rente-sektor
+2) langsiktige renter baserer seg på gjennomsnittlig forventet inflasjonsrate de neste 20-30 årene, som er mer skjermet mot radikale forandringer.
+
+
+## Viktige hendelser
+
+##### 2008-2009: finanskrisen
+
+Påvirker all rentedata, rentene blir høyere. Men størst effekt på short-term renter (kortsiktige renter)
+
+##### 2011-2012: Statsgjeldskrisen som rammet Europa
+
+Ingen klar påvirkning. Er dette amerikanske renter feks?
+
+##### 2020-2021: korona
+
+Kraftig fall i alle renter, både korte og lange. Er dette pga. myndighetene satt ned styringsrenten veldig lavt?
+
+## Enkel rentemodell: Vasicek
+
+
+$$dr= \kappa (\theta - r) dt + \sigma dW$$
+
+hvor $W$ er tilfeldig markedsrisiko, $\kappa$ er farten på reversjonen mot forventningsverdien, $\theta$ er long-term level av forventningsverdien, og $\sigma$ er volatiliteten.
+
+Leddet $\kappa (\theta - r)$ kalles drift factor og representerer forventet instant forandring i renten for tiden t.
+
+
+Merk at denne modellen tillater negative verdier for renter!
+
+For å bestemme parameterne i modellen $\kappa$,$\theta$ og $\sigma$ bruker vi MLE.
+
+Løsning:
+
+$$ 
+r_ti = r_t(i-1) exp(-\kappa(T_i-t_{i-1})) + \theta (1- exp(-k\kappa(t_i - t_{i-1}))) + Z\sqrt{\frac{\sigma^2(1-exp(-2\kappa(t_i-t_{i-1}))}{2\kappa}} 
+$$
+
+der $Z\sim N(0,1)$
+
+kode og mle inspirert herfra https://puppyeconomics.wordpress.com/2014/12/20/vasicek-short-rate-interest-model-in-r/ og herfra
+https://minerva-access.unimelb.edu.au/bitstream/handle/11343/191256/APPLICATION+OF+MAXIMUM+LIKELIHOOD+ESTIMATION+TO+STOCHASTIC+SHORT+RATE+MODELS.pdf;jsessionid=E5663406D23F190AA601BD7CE87187D6?sequence=1
+
+```{r}
+df = as.matrix(allSeries[["3 mnd"]]$value)
+# plot 3 mnds rente
+ggplot() + geom_line(data = allSeries[["3 mnd"]], mapping = aes(x=date , y=value))+ ggtitle(" 3 months interest rate daily yield (%)") + labs(x="Date", y="Daily Yield (%)")
+
+```
+```{r}
+VasicekHelper <- function(r, kappa, theta, sigma, dt = 1/252) {
+  # Helper function that calculates the next rate based on the discretization
+  # of the Varicek model. 
+  #
+  # Args: 
+  #   r: The interest rate used to generate the next interest rate.
+  #   kappa: The mean reversion rate. 
+  #   theta: The mean rate or long term rate. 
+  #   sigma: Volatility. 
+  #   dt: The change in time between observations. Defaults to 1/252 because
+  #       we assume generation of daily rates and there are 252 trading days 
+  #       per year. 
+  #
+  # Returns:
+  #   A vector of simulated short rates. 
+  #   gives the result of the diff.eq for r(t)
+  term1 <- exp(-1 * kappa * dt)
+  term2 <- (sigma^2) * (1 - term1^2) / (2*kappa)
+  result <- r*term1 + theta*(1-term1) + sqrt(term2)*rnorm(n=1)
+  return(result)
+}
+
+VasicekSimulation <- function(N, r0, kappa, theta, sigma, dt = 1/252) {
+  # Generates a single short rate simulation using the Vasicek model.
+  #
+  # Args: 
+  #   N: The number of points to generate in each simulation. For example, 
+  #      the number of days when simulating daily rates.
+  #   r0: The initial interest rate. 
+  #   kappa: The mean reversion rate. 
+  #   theta: The mean rate or long term rate. 
+  #   sigma: Volatility. 
+  #   dt: The change in time between observations. Defaults to 1/252 because
+  #       we assume generation of daily rates and there are 252 trading days 
+  #       per year. 
+  #
+  # Returns:
+  #   A vector of simulated short rates. 
+
+  short.rates <- rep(0, N)
+  short.rates[1] <- r0
+  for (i in 2:N) {
+    short.rates[i] <- VasicekHelper(short.rates[i - 1], kappa, theta, sigma, dt)
+  }
+  return(short.rates)
+}
+
+VasicekSimulations <- function(M, N, r0, kappa, theta, sigma, dt = 1/252) {
+  # Generates several short rate simulations using the Vasicek model.
+  #
+  # Args: 
+  #   M: The number of simulations to run. 
+  #   N: The number of points to generate in each simulation. For example, 
+  #      the number of days when simulating daily rates.
+  #   r0: The initial interest rate. 
+  #   kappa: The mean reversion rate. 
+  #   theta: The mean rate or long term rate. 
+  #   sigma: Volatility. 
+  #   dt: The change in time between observations. Defaults to 1/252 because
+  #       we assume generation of daily rates and there are 252 trading days 
+  #       per year. 
+  #
+  # Returns:
+  #   An N row by M column matrix of simulated short rates. 
+
+  sim.mat <- matrix(nrow = N, ncol = M)
+  for (i in 1:M) {
+    sim.mat[, i] <- VasicekSimulation(N, r0, kappa, theta, sigma, dt)
+  }
+  return(sim.mat)
+}
+
+VasicekZeroCouponBondPrice <- function(r0, kappa, theta, sigma, years) {
+  # Calculates th zero coupon bond price. 
+  #
+  # Args: 
+  #   r0: The initial interest rate. 
+  #   kappa: The mean reversion rate. 
+  #   theta: The mean rate or long term rate. 
+  #   sigma: Volatility. 
+  #   years: The length or maturity of the bond.  
+  #
+  # Returns:
+  #   A decimal price of the bond (i.e. 0.98 for 98). 
+
+  b.vas <- (1-exp(-years*kappa)) / kappa
+  a.vas <- (theta-sigma^2/(2*kappa^2))*(years-b.vas)+(sigma^2)/(4*kappa)*b.vas^2
+  return(exp(-a.vas-b.vas*r0))
+}
+
+VasicekYieldCurve <- function(r0, kappa, theta, sigma, max.maturity=10) {
+  # Produces a yield curve from the Vasicek model with maturities ranging 
+  # from 1 year to max.maturity.  
+  #
+  # Args: 
+  #   r0: The initial interest rate. 
+  #   kappa: The mean reversion rate. 
+  #   theta: The mean rate or long term rate. 
+  #   sigma: Volatility. 
+  #   max.maturity: Maximum maturity in years (must be integer).
+  #
+  # Returns:
+  #   A decimal price of the bond (i.e. 0.98 for 98). 
+  yields <- rep(0, max.maturity)
+  for (y in 1:max.maturity) {
+    yields[y] <- -log(VasicekZeroCouponBondPrice(r0, kappa, theta, sigma, y))/y
+  }
+  return(yields)
+}
+
+VasicekCalibration <- function(data, dt = 1/252) {
+  # Calibrates the vasicek model using the maximum likelihood estimator.
+  #
+  # Args:
+  #   fred.ticker: interest rate data
+  #   dt: The change in time between observations. Defaults to 1/252 because
+  #       we assume generation of daily rates and there are 252 trading days 
+  #       per year. 
+  #
+  # Returns:
+  #   A vector of the form c(kappa, theta, sigma, r0), where kappa is the mean
+  #   reversion rate, theta is the long-term rate/mean, sigma is the volatility
+  #   and r0 is the last observed rate.
+  #
+  # Requires:
+  #   quantmod
+
+  require(quantmod)
+
+  data <- na.omit(data)/100 # quotes 1.00% as 1.00 instead of 0.01 
+  n <- length(data)
+  
+  # do the calculations
+  Sx <- sum(data[1:(length(data) - 1)])
+  Sy <- sum(data[2:length(data)])
+  Sxx <- as.numeric(crossprod(data[1:(length(data) - 1)], data[1:(length(data) - 1)]))
+  Sxy <- as.numeric(crossprod(data[1:(length(data) - 1)], data[2:length(data)]))
+  Syy <- as.numeric(crossprod(data[2:length(data)], data[2:length(data)]))
+  
+  theta  <- (Sy * Sxx - Sx * Sxy) / (n* (Sxx - Sxy) - (Sx^2 - Sx*Sy) )
+  kappa <- -log((Sxy - theta * Sx - theta * Sy + n * theta^2) /   (Sxx - 2 * theta * Sx + n * theta^2)) / dt
+  a <- exp(-kappa*dt)
+  sigmah2 <- (Syy - 2 * a * Sxy + a^2 * Sxx - 2 * theta * (1-a) * (Sy - a * Sx) + n * theta^2 * (1 - a)^2)/n
+  sigma <- sqrt(sigmah2 * 2 * kappa / (1 - a^2))
+  
+  r0 <- data[length(data)]
+  
+  return(c(kappa, theta, sigma, r0))
+}
+```
+
+
+
+
+
+
+
+```{r}
+
+#User generated function for Parameter calibration.
+Vasicek_Params <- function(data, dt=1) {
+  N <- length(data)
+  ones <- seq(1,1,length.out = (N-1))
+  x <- cbind(ones, data[1:(N-1)])
+  
+  #Maximum Likelihood estimation
+  ols <- solve(t(x) %*% x) %*% (t(x) %*% data[2:N])           
+  resid <- data[2:N] - (x %*% ols)
+  
+  c<- ols[1]
+  b <- ols[2]
+  delta <- sd(resid)
+  
+  alpha <- -(log(b)/dt)
+  cat("\nalpha: ", alpha)
+  theta <- c/(1-b)
+  cat("\ntheta: ", theta)
+  sigma <- delta/sqrt((b^2-1)*dt/(2 * log(b)))
+  cat("\nsigma: ", sigma)
+  
+  params <- c(alpha, theta, sigma)
+  return(params)
+}
+
+```
+
+
+
+```{r}
+SimulateVasicek <- function(serie, M, params){
+   data = as.matrix(allSeries[[serie]]$value)
+   T= length(data) #nr of days to simulate each time
+   r0 = data[1]
+   sd_ir = sd(data)
+   mean_ir = mean(data)
+   W = rnorm(T)
+   dW = cumsum(W)
+    
+   N = length(data)
+   ones = seq(1,1,length.out =(N-1))
+   x = cbind(ones, data[1:(N-1)])
+   x <- as.matrix(x)
+   
+  #Maximum Likelihood estimation
+   ols <- solve(t(x) %*% x) %*% (t(x) %*% data[2:N])           
+   resid <- data[2:N] - (x %*% ols)
+   c<- ols[1]
+   b <- ols[2]
+   delta <- sd(resid)
+   
+   r <- seq(0,0,length.out = T)
+   
+   #Standard Monte Carlo
+# one row per simulation round and one column per day to simulate
+   mat_MC <- matrix(0, nrow = M, ncol = T) #Initializing Zero matrix
+   mat_MC[,1] <- r0 #Setting initial data for all simulations
+   for(j in 1:M){ #for each simulation
+     r[1] <- r0 #set initial value for r
+     for (i in 2:T){ #go through the next T-1 days to simulate
+       r[i] <- c + (b * r[i-1]) + (rnorm(1)*delta) #discretized formula givng solution for r
+       mat_MC[j,i] <- r[i] #insert into solution matrix
+  }
+}
+
+   # compare plots of simulated and actual interest rate
+   matplot(t(mat_MC), col = 8, type = "l",xlab = "Time Horizon", ylab = "Rates in %")
+   lines(x = 1:T, y = colMeans(mat_MC), col = 2, lwd = 2)
+   lines(x = 1:T, y= df, col=3, lwd=2)
+   
+  #Expected value at time t = 220 after 5000 simulations.
+   mean_MC <- mean(mat_MC[,T])
+   cat("mean of last value of markov chains: ", mean_MC)
+   lastobs <- df[T]
+   cat("\n actual value at last day: ", lastobs)
+   # 
+}
+
+```
+
+
+```{r}
+set.seed(123)
+SimulateVasicek("3 mnd", 100)
+SimulateVasicek("1 år", 100)
+SimulateVasicek("10 år", 100)
+```
+
+
+```{r}
+set.seed(500)
+
+MC_CV <- function(serie){ 
+  data = as.matrix(allSeries[[serie]]$value)
+  N <- 5000
+  T = lengt(data)
+  
+  result <- seq(0,0, length.out = T)
+  result_cv <- seq(0,0, length.out = T)
+  result[1] <- data[1]
+  result_cv[1] <- data[1]
+  
+  r <- seq(0,0,length.out = T)
+  r_1 <- seq(0,0,length.out = T)
+  
+  #Setting Initial values.
+  r[1] <- data[1]
+  r_1[1] <- data[1]
+  
+   ones = seq(1,1,length.out =(N-1))
+   x = cbind(ones, data[1:(N-1)])
+   x <- as.matrix(x)
+   
+  #Maximum Likelihood estimation
+   ols <- solve(t(x) %*% x) %*% (t(x) %*% data[2:N])           
+   resid <- data[2:N] - (x %*% ols)
+   c<- ols[1]
+   b <- ols[2]
+   delta <- sd(resid)
+  
+  #Monte Carlo Sim that generates 221 samples of data.
+  for(i in 2:(T+1)){
+    #Standard MC Sim
+    r[i] <- c + (b * r[i-1]) + (rnorm(1)*delta)
+  }
+  
+  plot(r, type = "l", ylim = c(2.6,3.6), xlab = "Time Horizon", ylab = "Rates") #Std MC
+  lines(x = 1:221, y = data, col = 2) # actual data
+  
+  #Monte Carlo Sim to generate 5000 samples of data.
+  for(i in 2:N){
+    r_1[i] <- c + (b * r_1[i-1]) + (rnorm(1)*delta)
+  }
+  
+  #Initialising an empty list to store results of calibrations.
+  list_of_vec <- list(2)
+  list_of_vec[[1]] <- r # 220 Samples
+  list_of_vec[[2]] <- r_1 # N=5000 samples 
+  return(list_of_vec)
+}  
+
+#Executes the user generated fucntion
+results <- MC_CV("3mnd")
+```
+
+
+
+
+
+Ved disse funksjonene har jeg prøvd å simulere videre 
+
+```{r}
+#source for this code:
+#https://github.com/bickez/puppy-economics/blob/master/vasicek.R
+
+VasicekHelper <- function(r, kappa, theta, sigma, dt = 1/252) {
+  # Helper function that calculates the next rate based on the discretization
+  # of the Varicek model. 
+  #
+  # Args: 
+  #   r: The interest rate used to generate the next interest rate.
+  #   kappa: The mean reversion rate. 
+  #   theta: The mean rate or long term rate. 
+  #   sigma: Volatility. 
+  #   dt: The change in time between observations. Defaults to 1/252 because
+  #       we assume generation of daily rates and there are 252 trading days 
+  #       per year. 
+  #
+  # Returns:
+  #   A vector of simulated short rates. 
+  #   gives the result of the diff.eq for r(t)
+  term1 <- exp(-1 * kappa * dt)
+  term2 <- (sigma^2) * (1 - term1^2) / (2*kappa)
+  result <- r*term1 + theta*(1-term1) + sqrt(term2)*rnorm(n=1)
+  return(result)
+}
+
+VasicekSimulation <- function(N, r0, kappa, theta, sigma, dt = 1/252) {
+  # Generates a single short rate simulation using the Vasicek model.
+  #
+  # Args: 
+  #   N: The number of points to generate in each simulation. For example, 
+  #      the number of days when simulating daily rates.
+  #   r0: The initial interest rate. 
+  #   kappa: The mean reversion rate. 
+  #   theta: The mean rate or long term rate. 
+  #   sigma: Volatility. 
+  #   dt: The change in time between observations. Defaults to 1/252 because
+  #       we assume generation of daily rates and there are 252 trading days 
+  #       per year. 
+  #
+  # Returns:
+  #   A vector of simulated short rates. 
+
+  short.rates <- rep(0, N)
+  short.rates[1] <- r0
+  for (i in 2:N) {
+    short.rates[i] <- VasicekHelper(short.rates[i - 1], kappa, theta, sigma, dt)
+  }
+  return(short.rates)
+}
+
+VasicekSimulations <- function(M, N, r0, kappa, theta, sigma, dt = 1/252) {
+  # Generates several short rate simulations using the Vasicek model.
+  #
+  # Args: 
+  #   M: The number of simulations to run. 
+  #   N: The number of points to generate in each simulation. For example, 
+  #      the number of days when simulating daily rates.
+  #   r0: The initial interest rate. 
+  #   kappa: The mean reversion rate. 
+  #   theta: The mean rate or long term rate. 
+  #   sigma: Volatility. 
+  #   dt: The change in time between observations. Defaults to 1/252 because
+  #       we assume generation of daily rates and there are 252 trading days 
+  #       per year. 
+  #
+  # Returns:
+  #   An N row by M column matrix of simulated short rates. 
+
+  sim.mat <- matrix(nrow = N, ncol = M)
+  for (i in 1:M) {
+    sim.mat[, i] <- VasicekSimulation(N, r0, kappa, theta, sigma, dt)
+  }
+  return(sim.mat)
+}
+
+VasicekZeroCouponBondPrice <- function(r0, kappa, theta, sigma, years) {
+  # Calculates th zero coupon bond price. 
+  #
+  # Args: 
+  #   r0: The initial interest rate. 
+  #   kappa: The mean reversion rate. 
+  #   theta: The mean rate or long term rate. 
+  #   sigma: Volatility. 
+  #   years: The length or maturity of the bond.  
+  #
+  # Returns:
+  #   A decimal price of the bond (i.e. 0.98 for 98). 
+
+  b.vas <- (1-exp(-years*kappa)) / kappa
+  a.vas <- (theta-sigma^2/(2*kappa^2))*(years-b.vas)+(sigma^2)/(4*kappa)*b.vas^2
+  return(exp(-a.vas-b.vas*r0))
+}
+
+VasicekYieldCurve <- function(r0, kappa, theta, sigma, max.maturity=10) {
+  # Produces a yield curve from the Vasicek model with maturities ranging 
+  # from 1 year to max.maturity.  
+  #
+  # Args: 
+  #   r0: The initial interest rate. 
+  #   kappa: The mean reversion rate. 
+  #   theta: The mean rate or long term rate. 
+  #   sigma: Volatility. 
+  #   max.maturity: Maximum maturity in years (must be integer).
+  #
+  # Returns:
+  #   A decimal price of the bond (i.e. 0.98 for 98). 
+  yields <- rep(0, max.maturity)
+  for (y in 1:max.maturity) {
+    yields[y] <- -log(VasicekZeroCouponBondPrice(r0, kappa, theta, sigma, y))/y
+  }
+  return(yields)
+}
+
+VasicekCalibration <- function(data, dt = 1/252) {
+  # Calibrates the vasicek model using the maximum likelihood estimator.
+  #
+  # Args:
+  #   fred.ticker: interest rate data
+  #   dt: The change in time between observations. Defaults to 1/252 because
+  #       we assume generation of daily rates and there are 252 trading days 
+  #       per year. 
+  #
+  # Returns:
+  #   A vector of the form c(kappa, theta, sigma, r0), where kappa is the mean
+  #   reversion rate, theta is the long-term rate/mean, sigma is the volatility
+  #   and r0 is the last observed rate.
+  #
+  # Requires:
+  #   quantmod
+
+  require(quantmod)
+
+  data <- na.omit(data)/100 # quotes 1.00% as 1.00 instead of 0.01 
+  n <- length(data)
+  
+  # do the calculations
+  Sx <- sum(data[1:(length(data) - 1)])
+  Sy <- sum(data[2:length(data)])
+  Sxx <- as.numeric(crossprod(data[1:(length(data) - 1)], data[1:(length(data) - 1)]))
+  Sxy <- as.numeric(crossprod(data[1:(length(data) - 1)], data[2:length(data)]))
+  Syy <- as.numeric(crossprod(data[2:length(data)], data[2:length(data)]))
+  
+  theta  <- (Sy * Sxx - Sx * Sxy) / (n* (Sxx - Sxy) - (Sx^2 - Sx*Sy) )
+  kappa <- -log((Sxy - theta * Sx - theta * Sy + n * theta^2) /   (Sxx - 2 * theta * Sx + n * theta^2)) / dt
+  a <- exp(-kappa*dt)
+  sigmah2 <- (Syy - 2 * a * Sxy + a^2 * Sxx - 2 * theta * (1-a) * (Sy - a * Sx) + n * theta^2 * (1 - a)^2)/n
+  sigma <- sqrt(sigmah2 * 2 * kappa / (1 - a^2))
+  
+  r0 <- data[length(data)]
+  
+  return(c(kappa, theta, sigma, r0))
+}
+
+```
+
+```{r}
+## define model parameters and calibrate (what to simulate)
+#years <- 16
+#N <- years * 252 # each year consists of 252 days
+#t <- (1:N)/252 # for plotting purposes
+
+days <- length(allSeries[["3 mnd"]]$value)
+
+# calibrate the model
+calibration <- VasicekCalibration(allSeries[["3 mnd"]]$value)
+kappa <- calibration[1] # kappa: The mean reversion rate. 
+theta <- calibration[2] # theta: The mean rate or long term rate. 
+sigma <- calibration[3] # sigma: Volatility. 
+cat("kappa: ",kappa)
+cat("theta: ",theta)
+cat("sigma: ",sigma)
+
+#start value
+r0 <- allSeries[["3 mnd"]]$value[days] 
+
+  #   kappa: The mean reversion rate. 
+  #   theta: The mean rate or long term rate. 
+  #   sigma: Volatility. 
+
+set.seed(666)
+
+sim_3mnd <- VasicekSimulation(days, r0, kappa, theta, sigma)
+sim_3mnd <- data.frame(sim_3mnd)
+
+# plot(x = t, y= test, type ="l", xlab= "år", ylab="rente", main="Simulert rente fra Vasicek")
+
+#sim
+ggplot(data = sim_3mnd, mapping = aes(x=allSeries[["3 mnd"]]$date , y=sim_3mnd)) + 
+  geom_line() + ggtitle("Simulert 3-mnd rente") + labs(x="Time", y = "Rate") 
+
+ggplot() + geom_line(data = allSeries[["3 mnd"]], mapping = aes(x=date , y=value))+ 
+  geom_line(data = allSeries[["3 mnd"]], mapping = aes(x=date , y=value)) + ggtitle("Faktisk 3-mnd rente")
+
+
+```
+```{r}
+days <- length(allSeries[["3 mnd"]]$value)
+
+# calibrate the model
+calibration <- VasicekCalibration(allSeries[["3 mnd"]]$value)
+kappa <- calibration[1] # kappa: The mean reversion rate. 
+theta <- calibration[2] # theta: The mean rate or long term rate. 
+sigma <- calibration[3] # sigma: Volatility. 
+cat("kappa: ",kappa)
+cat("theta: ",theta)
+cat("sigma: ",sigma)
+r0 <- allSeries[["3 mnd"]]$value[1]
+
+
+  #   kappa: The mean reversion rate. 
+  #   theta: The mean rate or long term rate. 
+  #   sigma: Volatility. 
+
+set.seed(666)
+
+sim_3mnd <- VasicekSimulation(days, r0, kappa, theta, sigma)
+sim_3mnd <- data.frame(sim_3mnd)
+
+# plot(x = t, y= test, type ="l", xlab= "år", ylab="rente", main="Simulert rente fra Vasicek")
+
+# de neste 15 årene simulert fra 3mnd renten
+ggplot(data = sim_3mnd, mapping = aes(x=allSeries[["3 mnd"]]$date , y=sim_3mnd)) + 
+  geom_line() + ggtitle("Simulert 3-mnd rente") + labs(x="Time", y = "Price") 
+
+ggplot() + geom_line(data = allSeries[["3 mnd"]], mapping = aes(x=date , y=value))+ 
+  geom_line(data = allSeries[["3 mnd"]], mapping = aes(x=date , y=value)) + ggtitle("Faktisk 3-mnd rente")
+
+```
+
+
+
+
+```{r}
+# test with several (M = 20) simultions
+# M <- 10
+# t <- (1:N)/252
+# test.mat <- VasicekSimulations(M, days, r0, kappa, theta, sigma)
+# 
+# # plot the paths
+# plot(t, test.mat[, 1], type = 'l', main = 'Short Rates', ylab = 'rt', 
+#      ylim = c(0, max(test.mat)), col = 1)
+# for (count in 2:ncol(test.mat)) {
+#   lines(t, test.mat[, count], col = count)
+# }
+```
+```{r}
+# price the zero coupon bonds 
+#VasicekZeroCouponBondPrice(r0, kappa, theta, sigma, years) 
+
+# derive a yield curve 
+# (can do this for several values of r0 to get several curves)
+yields <- VasicekYieldCurve(r0, kappa, theta, sigma, 10)
+maturity <- seq(1, 10, 1)
+df <- data.frame(maturity, yields)
+
+ggplot(data=df) + geom_line(mapping=aes(x=maturity, y=yields)) + ggtitle("Yield Curve Shapes")
+
+```
+
+We have a normal yield curve where long maturity bonds have a higher yield than shorter.
